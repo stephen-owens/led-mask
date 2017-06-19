@@ -1,7 +1,9 @@
-#include "FastLED.h"
+#include <FastLED.h>
 #include <SPI.h>
 #include <SoftwareSerial.h>
-
+#include <LEDMatrix.h>
+#include <LEDText.h>
+#include <FontMatrise.h>
 #include "Adafruit_BLE.h"
 #include "Adafruit_BluefruitLE_SPI.h"
 #include "BluefruitConfig.h"
@@ -20,38 +22,54 @@
 //
 //    -Stephen Owens & Matt Jones, 2017
 
+
 //Neopixels
 #define DATA_PIN            2       //control pin for LEDs
-#define LED_TYPE            WS2811 
+#define LED_TYPE            WS2812B 
 #define COLOR_ORDER         GRB
 #define NUM_LEDS            64      //8x8 matrix of LEDs
+#define MATRIX_WIDTH        8
+#define MATRIX_HEIGHT       8
+#define MATRIX_TYPE         HORIZONTAL_ZIGZAG_MATRIX 
 #define BRIGHTNESS          16      //keep low to prevent LEDs blinding mask wearer
 #define FRAMES_PER_SECOND   120
 
-CRGB leds[NUM_LEDS];
+CRGB leds[NUM_LEDS];  //Standard neopixel strip
+cLEDMatrix <MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> matrixLEDS; //Neopixel matrix
+cLEDText scrollingMessage;
+
+const unsigned char message[] = { EFFECT_SCROLL_LEFT " LED GAS MASK V1.0 Loading......Loading......Loading...... " EFFECT_FRAME_RATE "\x04" EFFECT_RGB "\x00\x64\x00" };
 
 //Bluefruit LE
 #define FACTORYRESET_ENABLE 1       //Bluefruit factory reset
 
 Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
-
 uint8_t readPacket(Adafruit_BLE *ble, uint16_t timeout);
 extern uint8_t packetbuffer[];
-
 
 void setup() 
 {
   delay(3000);
 
-  bluefruitSetup();
   LEDSetup();
+  bluefruitSetup();
 }
 
 void LEDSetup()
 {
-  FastLED.addLeds<LED_TYPE,DATA_PIN,COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+  //Initialise the neopixels
+  FastLED.addLeds<LED_TYPE,DATA_PIN,COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.addLeds<LED_TYPE,DATA_PIN,COLOR_ORDER>(matrixLEDS[0], matrixLEDS.Size()); 
   FastLED.setBrightness(BRIGHTNESS); 
+  FastLED.clear(true);
+
+  //Initialise the scrolling message with boot text
+  scrollingMessage.SetFont(MatriseFontData);
+  scrollingMessage.Init(&matrixLEDS, matrixLEDS.Width(), scrollingMessage.FontHeight() + 1, 0, 0);
+  scrollingMessage.SetText((unsigned char *)message, sizeof(message) - 1);
+  scrollingMessage.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0xff, 0x00, 0xff);
 }
+
 void bluefruitSetup() 
 {
   Serial.begin(115200);
@@ -63,7 +81,6 @@ void bluefruitSetup()
 
   if ( FACTORYRESET_ENABLE )
   {    
-    
     if ( ! ble.factoryReset() ) 
     {
       Serial.println(F("Couldn't factory reset"));
@@ -89,17 +106,15 @@ SimpleVisualisationList patterns  = { modeRainbow, modeGlitterRainbow, modeConfe
 uint8_t currentVisualisation = 0; //index of current visulisation
 uint8_t gHue = 0; // rotating base-color used by the stock visualisations
 
+int maskMode = 0;  
+
 void loop() 
 {  
-  patterns[currentVisualisation];
-
-  FastLED.show();  
-  //FastLED.delay(1000/FRAMES_PER_SECOND); //delay to keep the framerate 
-
-  EVERY_N_MILLISECONDS( 20 ) { gHue++; } // slowly cycle the base-color through the rainbow
 
   //Bluetooth read
-  uint8_t len = readPacket(&ble, BLE_READPACKET_TIMEOUT);
+  /*
+  int8_t len = readPacket(&ble, BLE_READPACKET_TIMEOUT);
+  maskMode = packetbuffer[1];
 
   if (packetbuffer[1] == 'B') 
   {
@@ -108,15 +123,28 @@ void loop()
     Serial.print ("Button "); Serial.print(buttnum);
     currentVisualisation = buttnum;      
   }
+  */
+ 
+ //Modes that the mask can enter. THis will be read from a bluetooth packet.
+ //Mode 0 boot mode
+ //Mode 1 visualisation mode                  Mode 2 scrolling text mode    
+ //Mode 3 sound reactive visualisations mode  Mode 4 hush plug sync mode   
 
-  visualisations(currentVisualisation);
-
+ switch(maskMode) {
+   case 0: break;
+   case 1: visualisations(currentVisualisation); break;          //update to include submode based on data from bluetooth packet
+   case 2: scrollText("Hello World"); break;  //update to include text received from bluetooth packet
+   case 3: soundReact(); break;
+   case 4: hushReact(50); break;              //update to include hush value from bluetooth packet
+   default: visualisations(0); break;
+   break;
+ }
 }
 
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
 
 void visualisations(int mode) 
-{
+{  
   //Visualisations mode, displays animations selected by the user
   //0 cycle through all visualisations
   //1 rainbow effect    2 rainbow with glitter    3 confetti effect
@@ -134,26 +162,34 @@ void visualisations(int mode)
     default: modeCycle(); break;
     break;
   }
+  patterns[currentVisualisation];
+  FastLED.show();  
+  FastLED.delay(1000/FRAMES_PER_SECOND); //delay to keep the framerate
+  EVERY_N_MILLISECONDS( 20 ) { gHue++; }; 
 }
 
 void soundReact() 
 {
-  //sound equaliser that responds to music
+  //animate an EQ that reacts to sound volume
 }
 
-void hushReact() 
+void hushReact(int hushLevel) 
 {
   //matrix displays strength of hush plug
 }
 
-void scrollText(char scrollMessage[], int scrollDirection) 
+void scrollText(char scrollMessage[]) 
 {
-  //scrolling text message - scrollMessage = message to display. scrollDirection = left, right, up or down
-}
-
-void customDisplay() 
-{
-  //each LED is indivudally user programmable
+  if (scrollingMessage.UpdateText() == -1)
+  {
+    scrollingMessage.SetText((unsigned char *)message, sizeof(message) - 1);
+  }
+  else
+  {
+    FastLED.show();
+  }
+  delay(10);
+  
 }
 
  void modeCycle() 
